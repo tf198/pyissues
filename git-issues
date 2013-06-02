@@ -1,0 +1,262 @@
+#!/usr/bin/env python
+'''
+A file based issue tracker intended to play nice with diff
+'''
+import sys, yaml, json, os, datetime, uuid, argparse, getpass
+
+import issues_conf as conf
+
+def timestamp():
+    return datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+def load_data(filename, **kwargs):
+    try:
+        return json.load(open(filename, 'r'), **kwargs)
+    except IOError:
+        return {}
+    
+def save_data(filename, data, **kwargs):
+    json.dump(data, open(filename, 'w'), indent=0)
+        
+class PyIssues(object):
+    '''
+    Simple issues collection, based on a directory.
+    '''
+    def __init__(self, directory):
+        self.directory = directory
+        self.issues_file = "{0}/issues.db".format(directory)
+        self.issues_data = load_data(self.issues_file)
+    
+    def close(self):
+        if self.issues_data:
+            save_data(self.issues_file, self.issues_data)
+            self.issues_data = None
+            
+    def filter(self, sort=None, filter=None):
+        items = [ Issue.expand_index(x, self.issues_data[x]) for x in self.issues_data ]
+        if sort:
+            reverse = False
+            if sort[0] == '-':
+                sort = sort[1:]
+                reverse = True
+            items = sorted(items, key=lambda x: x[sort], reverse=reverse)
+            
+        if filter:
+            return [ x for x in items if filter(x) ]
+        
+        return items
+    
+    def match(self, uuid):
+        '''
+        Match a single file from a uuid stub so we dont have to type full uuids.
+        Returns the full file path or throws an error if none or multiple matches.
+        '''
+        import glob
+        matches = glob.glob('{0}/{1}*'.format(self.directory, uuid))
+        
+        if not matches:
+            raise Exception("No match for uuid: {0}".format(uuid))
+        
+        if len(matches) > 1:
+            print [ os.path.basename(x) for x in matches ]
+            raise Exception("Multiple matches for {0} - be more specific".format(uuid))
+        
+        return matches[0]
+    
+    def get(self, uuid):
+        with open(self.match(uuid)) as bob:
+            data = yaml.load(bob)
+            
+        return Issue(**data)
+    
+    def index(self, issue):
+        i = [ getattr(issue, x) for x in self.INDEX[:-2] ]
+        i.append(len(issue.comments))
+        i.append(len(issue.attachments))
+        return i
+        
+    def update(self, issue):
+        issue.updated = timestamp()
+        
+        self.issues_data[issue.uuid] = issue.index()
+        
+        with open('{0}/{1}'.format(self.directory, issue.uuid), 'w') as bob:
+            issue.write(bob)
+        
+class Issue(object):
+    
+    def __init__(self, **kwargs):
+        now = timestamp()
+        
+        data = dict(conf._fields)
+        data.update(kwargs)
+        
+        for key in data:
+            setattr(self, key, data[key])
+            
+        if self.uuid is None:
+            self.uuid = str(uuid.uuid4())
+    
+    def index(self):
+        return [ getattr(self, x) for x in conf._index ]
+    
+    @classmethod
+    def expand_index(cls, uuid, index):
+        d = dict(zip(conf._index, index))
+        d['uuid'] = uuid
+        return d
+        
+    def write(self, stream):
+        json.dump(self.__dict__, stream, indent=2)
+                
+    def __repr__(self):
+        return "<Issue {0}>".format(self.uuid[:6]) 
+    
+#### ISSUE ACTIONS ###
+    
+def action_create(issues, *extra):
+    parser = argparse.ArgumentParser(description="Create issue")
+    for item in conf._required:
+        parser.add_argument('--{0}'.format(item),
+                            dest=item, default=None, help='Item {0}'.format(item))
+    options = parser.parse_args(extra)
+    
+    issue = Issue(created=timestamp());
+    
+    print '',
+    
+    for item in conf._required:
+        allowed = getattr(conf, item, None)
+        
+        value = getattr(options, item)
+        
+        while True:
+            if value is None:
+                print "{0} [{1}]: ".format(item.title(), getattr(issue, item)),
+                value = sys.stdin.readline().strip()
+                if value == '':
+                    value = getattr(issue, item)
+            
+            if allowed == None or value in allowed:
+                setattr(issue, item, value)
+                break
+            else:
+                value = None
+                print "Allowed options: [ {0} ]".format(', '.join(allowed))
+    
+    print "Issue - Ctrl D to exit.."
+    issue.body = sys.stdin.read()
+    
+    issues.update(issue)
+    
+def action_list(issues, *extra):
+    parser = argparse.ArgumentParser(description="List issues")
+    for item in conf._index:
+        default = conf._default_filters.get(item, None)
+        parser.add_argument('--{0}'.format(item),
+                            dest=item, default=default, help='Filter {0}'.format(item))
+    parser.add_argument('--sort', '-s', dest='sort', default='-created', help='Order by field')
+    options = parser.parse_args(extra)
+    
+    def filter_issues(x):
+        for item in conf._index:
+            value = getattr(options, item)
+            if value and value != 'all':
+                if x[item] != value:
+                    return False
+                
+        return True
+    
+    print_issues(issues.filter(sort=options.sort, filter=filter_issues))
+    
+def action_show(issues, uuid):
+    issue = issues.get(uuid)
+    print_issue(issue)
+            
+def action_update(issues, uuid, field, *text):
+    issue = issues.get(uuid)
+    if not hasattr(issue, field):
+        raise Exception("No field {0}".format(field))
+    
+    value = ' '.join(text)
+    
+    if hasattr(conf, field):
+        options = getattr(conf, field)
+        if not value in options:
+            raise Exception("Allowed values: {0}".format(', '.join(options))) 
+    
+    setattr(issue, field, " ".join(text))
+    issues.update(issue)
+    
+def action_close(issues, uuid):
+    action_update(issues, uuid, 'status', 'closed')
+
+def action_comment(issues, uuid, *text):
+    issue = issues.get(uuid)
+    
+    comment = "{0}\n[{1} {2}]".format(" ".join(text), getpass.getuser(), timestamp())
+    
+    issue.comments.append(comment)
+    issues.update(issue)
+
+def action_edit(issues, uuid):
+    import shutil, subprocess, tempfile
+    
+    item = issues.match(uuid)
+    fd, path = tempfile.mkstemp()
+    shutil.copy(item, path)
+    
+    editor = os.getenv('EDITOR', 'vi')
+    
+    subprocess.call([editor, path])
+
+    # load as issue for validation and correct outputting
+    try:
+        data = yaml.load(open(path, 'r'))
+        issue = Issue(**data)
+        
+        # okay to overwrite
+        issues.update(issue)
+        print "{0} updated".format(issue)
+    except Exception, e:
+        print "Bad syntax: {0}".format(e)
+    
+    os.unlink(path)
+
+def editor(filename=None):
+    pass
+
+def print_issue(issue):
+    data = issue.__dict__.copy()
+    data['attachments'] = '\n'.join(data['attachments'])
+    data['comments'] = '\n\n'.join(data['comments'])
+    
+    print conf._template.format(**data)
+
+def print_issues(issues):
+    import dateutil.parser
+    
+    template = "{0:6s} {1:30s} {2:8s} {3:8s} {4:8s} {5:10s}"
+    print template.format('UUID', 'Description', 'Owner', 'Assigned', 'Priority', 'Created')
+    print '-' * 75
+    for i in issues:
+        print template.format(i['uuid'][:6], i['description'][:30], i['owner'][:8], i['assigned'][:8], i['priority'][:8], i['created'][:10])
+
+if __name__ == '__main__':
+    
+    parser = argparse.ArgumentParser(description="Text based issue tracker")
+    parser.add_argument('action')
+    parser.add_argument('--directory', '-d', dest='directory', default='issues', help='Directory to store issues in')
+    
+    options, remaining = parser.parse_known_args()
+
+    issues = PyIssues(options.directory)
+    
+    try:
+        handler = globals()['action_{0}'.format(options.action)]
+    except KeyError:
+        raise Exception("No such action: {0}".format(options.action))
+    
+    handler(issues, *remaining)
+    
+    issues.close()
