@@ -9,6 +9,8 @@ version controlled.  Similar in concept to git-issues but you are left
 responsible for commiting the issuess data.  Should just require a
 `git add issues` when you modify any issues before you commit.
 
+::
+
     $ pyissues create
     >  Description []: My test issue
     >  Status [open]: 
