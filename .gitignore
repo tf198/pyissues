@@ -1,0 +1,5 @@
+*.pyc
+issues
+.project
+.pydevproject
+PyIssues.egg-info
