@@ -1,13 +1,25 @@
 PyIssues
 ========
-
-.. note:: I'm still playing with this so the data structure may change.
-   You have been warned!
-
 A simple issue tracker that stores its data in a folder which can be
-version controlled.  Similar in concept to git-issues but you are left
+version controlled.
+
+Similar in concept to git-issues but you are left
 responsible for commiting the issuess data.  Should just require a
 `git add issues` when you modify any issues before you commit.
+
+Status
+------
+I'm still playing with this so the data structure may change.
+You have been warned!
+
+Installation
+------------
+::
+
+    pip install https://github.com/tf198/pyissues/tarball/master
+
+Usage
+-----
 
 ::
 
