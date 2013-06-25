@@ -130,8 +130,12 @@ def action_edit(issues, uuid):
     os.unlink(path)
 
 def action_delete(issues, uuid):
-    f = issues.match(uuid)
-    os.unlink(f)
+    issues.delete(uuid)
+    logger.info("Issue {0} deleted".format(uuid))
+    
+def action_rebuild(issues):
+    c = issues.rebuild()
+    logger.info("Database rebuilt ({0} issues)".format(c))
 
 def print_issue(issue):
     data = issue.__dict__.copy()
@@ -156,7 +160,7 @@ if __name__ == '__main__':
     
     options, remaining = parser.parse_known_args()
     
-    level = logging.DEBUG if options.verbose else logging.WARNING
+    level = logging.DEBUG if options.verbose else logging.INFO
     logging.basicConfig(stream=sys.stderr, level=level)
 
     issues = pyissues.PyIssues(options.directory)

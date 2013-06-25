@@ -23,8 +23,9 @@ class PyIssues(object):
     def __init__(self, directory):
         self.directory = directory
         
-        if not os.path.isdir(directory):
-            os.mkdir(directory)
+        self.obj_dir = "{0}/objs".format(self.directory)
+        if not os.path.isdir(self.obj_dir):
+            os.makedirs(self.obj_dir)
         
         self.issues_file = "{0}/issues.db".format(directory)
         self.issues_data = load_data(self.issues_file)
@@ -32,7 +33,7 @@ class PyIssues(object):
     
     def close(self):
         if self.issues_data and self.dirty:
-            logger.info("Saving database...")
+            logger.debug("Saving database...")
             save_data(self.issues_file, self.issues_data)
             self.issues_data = None
             self.dirty = False
@@ -57,7 +58,7 @@ class PyIssues(object):
         Returns the full file path or throws an error if none or multiple matches.
         '''
         import glob
-        matches = glob.glob('{0}/{1}*'.format(self.directory, uuid))
+        matches = glob.glob('{0}/{1}*'.format(self.obj_dir, uuid))
         
         if not matches:
             raise Exception("No match for uuid: {0}".format(uuid))
@@ -79,16 +80,34 @@ class PyIssues(object):
         i.append(len(issue.comments))
         i.append(len(issue.attachments))
         return i
+    
+    def delete(self, uuid):
+        f = self.match(uuid)
+        issue = self.get(uuid)
         
+        del self.issues_data[issue.uuid]
+        os.unlink(f)
+        
+        self.dirty = True
+    
     def update(self, issue):
         issue.updated = timestamp()
         
         self.issues_data[issue.uuid] = issue.index()
         
-        with open('{0}/{1}'.format(self.directory, issue.uuid), 'w') as bob:
+        with open('{0}/{1}'.format(self.obj_dir, issue.uuid), 'w') as bob:
             issue.write(bob)
             
         self.dirty = True
+        
+    def rebuild(self):
+        self.issues_data = {}
+        c = 0
+        for uuid in os.listdir(self.obj_dir):
+            issue = self.get(uuid)
+            self.update(issue)
+            c += 1
+        return c
         
 class Issue(object):
     
