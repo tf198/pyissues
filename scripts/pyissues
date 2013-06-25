@@ -86,15 +86,23 @@ def action_update(issues, uuid, field, *text):
     setattr(issue, field, " ".join(text))
     issues.update(issue)
     
-def action_close(issues, uuid):
+def action_close(issues, uuid, *extra):
+    parser = argparse.ArgumentParser(description="Close issue")
+    parser.add_argument('--message', '-m', help='Add comment before closing')
+    options = parser.parse_args(extra)
+    
+    if options.message:
+        action_comment(issues, uuid, options.message)
+    
     action_update(issues, uuid, 'status', 'closed')
 
 def action_comment(issues, uuid, *text):
     issue = issues.get(uuid)
     
-    comment = "{0}\n[{1} {2}]".format(" ".join(text), getpass.getuser(), pyissues.timestamp())
+    if len(text) == 0:
+        raise Exception("No comment!")
     
-    issue.comments.append(comment)
+    issue.add_comment(" ".join(text), getpass.getuser())
     issues.update(issue)
 
 def action_edit(issues, uuid):
@@ -120,6 +128,10 @@ def action_edit(issues, uuid):
         logger.error("Bad syntax: {0}".format(e))
     
     os.unlink(path)
+
+def action_delete(issues, uuid):
+    f = issues.match(uuid)
+    os.unlink(f)
 
 def print_issue(issue):
     data = issue.__dict__.copy()
@@ -154,6 +166,11 @@ if __name__ == '__main__':
     except KeyError:
         raise Exception("No such action: {0}".format(options.action))
     
-    handler(issues, *remaining)
+    try:
+        handler(issues, *remaining)
+    except Exception as e:
+        if options.verbose:
+            raise
+        print "Error: {0}".format(e)
     
     issues.close()

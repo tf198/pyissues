@@ -113,6 +113,9 @@ class Issue(object):
         d = dict(zip(conf._index, index))
         d['uuid'] = uuid
         return d
+    
+    def add_comment(self, comment, user):
+        self.comments.append('{0}\n\t[ {1} {2} ]'.format(comment, user, timestamp()))
         
     def write(self, stream):
         json.dump(self.__dict__, stream, indent=2)
