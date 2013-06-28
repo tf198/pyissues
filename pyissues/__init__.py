@@ -102,6 +102,7 @@ class PyIssues(object):
         
     def rebuild(self):
         self.issues_data = {}
+        self.dirty = True
         c = 0
         for uuid in os.listdir(self.obj_dir):
             issue = self.get(uuid)
