@@ -105,7 +105,7 @@ class PyIssues(object):
         c = 0
         for uuid in os.listdir(self.obj_dir):
             issue = self.get(uuid)
-            self.update(issue)
+            self.issues_data[issue.uuid] = issue.index()
             c += 1
         return c
         
