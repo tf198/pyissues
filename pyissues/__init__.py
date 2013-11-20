@@ -23,6 +23,13 @@ class PyIssues(object):
     def __init__(self, directory):
         self.directory = directory
         
+        # load local settings
+        try:
+            execfile("{0}/conf.py".format(self.directory), conf.__dict__)
+            logger.debug("Loaded custom settings")
+        except IOError:
+            logger.debug("No custom settings")
+        
         self.obj_dir = "{0}/objs".format(self.directory)
         if not os.path.isdir(self.obj_dir):
             os.makedirs(self.obj_dir)
