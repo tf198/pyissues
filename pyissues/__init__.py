@@ -140,7 +140,7 @@ class PyIssues(object):
         for uuid in os.listdir(self.obj_dir):
             issue = self.get(uuid)
             if issue.status != 'archived':
-                self.issues_data[issue.uuid] = issue.index()
+                self.issues_data[issue.uuid] = issue.index(self.settings['_index'])
             c += 1
         return c
         
