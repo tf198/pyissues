@@ -4,8 +4,10 @@ import issues_conf as conf
 
 logger = logging.getLogger(__name__)
 
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 def timestamp():
-    return datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.datetime.utcnow().strftime(DATETIME_FORMAT)
 
 def load_data(filename, **kwargs):
     try:
@@ -22,10 +24,11 @@ class PyIssues(object):
     '''
     def __init__(self, directory):
         self.directory = directory
+        self.settings = conf.__dict__.copy()
         
         # load local settings
         try:
-            execfile("{0}/conf.py".format(self.directory), conf.__dict__)
+            execfile("{0}/conf.py".format(self.directory), self.settings)
             logger.debug("Loaded custom settings")
         except IOError:
             logger.debug("No custom settings")
@@ -38,15 +41,41 @@ class PyIssues(object):
         self.issues_data = load_data(self.issues_file)
         self.dirty = False
     
-    def close(self):
+    def flush(self):
+        '''
+        Writes out database if necessary.
+        Returns whether the database was written or not
+        '''
         if self.issues_data and self.dirty:
             logger.debug("Saving database...")
             save_data(self.issues_file, self.issues_data)
-            self.issues_data = None
             self.dirty = False
+            return True
+        return False
+    
+    def close(self):
+        '''
+        Saves the database if necessary and cleans up.
+        '''
+        self.flush()
+        self.issues_data = None
             
-    def filter(self, sort=None, filter_method=None):
-        items = [ Issue.expand_index(x, self.issues_data[x]) for x in self.issues_data ]
+    def filter(self, filters=None, sort=None):
+        '''
+        Returns index items matching the criteria.
+        
+        filters can be a func or a dict of exact matches.
+        sort is the name of a field, optionally prefixed with '-' for reverse.
+        '''
+        items = [ Issue.expand_index(x, self.issues_data[x], self.settings['_index']) for x in self.issues_data ]
+        
+        if filters:
+            if hasattr(filters, '__iter__'):
+                d = filters
+                filters = lambda x: { i: x.get(i) for i in d } == d
+            
+            items = [ x for x in items if filters(x) ]
+        
         if sort:
             reverse = False
             if sort[0] == '-':
@@ -54,9 +83,6 @@ class PyIssues(object):
                 reverse = True
             items = sorted(items, key=lambda x: x[sort], reverse=reverse)
             
-        if filter_method:
-            return [ x for x in items if filter_method(x) ]
-        
         return items
     
     def match(self, uuid):
@@ -68,25 +94,25 @@ class PyIssues(object):
         matches = glob.glob('{0}/{1}*'.format(self.obj_dir, uuid))
         
         if not matches:
-            raise Exception("No match for uuid: {0}".format(uuid))
+            raise PyIssuesException("No match for uuid: {0}".format(uuid))
         
         if len(matches) > 1:
-            print [ os.path.basename(x) for x in matches ]
-            raise Exception("Multiple matches for {0} - be more specific".format(uuid))
+            raise PyIssuesException("Multiple matches for {0} - be more specific".format(uuid))
         
         return matches[0]
     
     def get(self, uuid):
+        '''
+        Get a single issue.
+        uuid can be a partial uuid.
+        '''
         with open(self.match(uuid)) as bob:
             data = json.load(bob)
             
-        return Issue(**data)
+        return self.create(**data)
     
-    def index(self, issue):
-        i = [ getattr(issue, x) for x in self.INDEX[:-2] ]
-        i.append(len(issue.comments))
-        i.append(len(issue.attachments))
-        return i
+    def create(self, **params):
+        return Issue(self.directory, self.settings['_fields'], self.settings['_required'], **params)
     
     def delete(self, uuid):
         f = self.match(uuid)
@@ -100,7 +126,7 @@ class PyIssues(object):
     def update(self, issue):
         issue.updated = timestamp()
         
-        self.issues_data[issue.uuid] = issue.index()
+        self.issues_data[issue.uuid] = issue.index(self.settings['_index'])
         
         with open('{0}/{1}'.format(self.obj_dir, issue.uuid), 'w') as bob:
             issue.write(bob)
@@ -113,14 +139,20 @@ class PyIssues(object):
         c = 0
         for uuid in os.listdir(self.obj_dir):
             issue = self.get(uuid)
-            self.issues_data[issue.uuid] = issue.index()
+            if issue.status != 'archived':
+                self.issues_data[issue.uuid] = issue.index()
             c += 1
         return c
         
 class Issue(object):
     
-    def __init__(self, **kwargs):
-        data = dict(conf._fields)
+    def __init__(self, directory, fields, required, **kwargs):
+        
+        for f in required:
+            if not f in kwargs:
+                raise PyIssuesException("Missing required field: {0}.".format(f))        
+        
+        data = dict(fields)
         data.update(kwargs)
         
         for key in data:
@@ -131,21 +163,85 @@ class Issue(object):
             
         if self.created is None:
             self.created = timestamp()
+            
+        self._data_dir = "{0}/files/{1}".format(directory, self.uuid)
     
-    def index(self):
-        return [ getattr(self, x) for x in conf._index ]
+    def index(self, fields):
+        return [ getattr(self, x) for x in fields ] + [len(self.comments), len(self.attachments)]
     
     @classmethod
-    def expand_index(cls, uuid, index):
-        d = dict(zip(conf._index, index))
+    def expand_index(cls, uuid, index, fields):
+        d = dict(zip(fields + ('comments', 'attachments'), index))
         d['uuid'] = uuid
         return d
     
     def add_comment(self, comment, user):
-        self.comments.append('{0}\n\t[ {1} {2} ]'.format(comment, user, timestamp()))
+        '''
+        Add a comment.
+        Comment is stored in the form (comment, user, timestamp)
+        '''
+        self.comments.append((comment, user, timestamp()))
+    
+    def remove_comment(self, index):
+        '''
+        Remove a comment (zero based index)
+        '''
+        del(self.comments[index])
+    
+    def attach_file(self, filename, user):
+        '''
+        Attach a file to the issue.
         
+        Returns (original_name, stored_name, user, timestamp) as stored
+        '''
+        import shutil
+        
+        if not os.path.exists(filename):
+            raise Exception("No such file: {0}".format(filename))
+        
+        if not os.path.exists(self._data_dir):
+            os.makedirs(self._data_dir)
+        
+        f = os.path.basename(filename)
+        
+        i=0
+        while os.path.exists("{0}/{1}_{2}".format(self._data_dir, f, i)):
+            i += 1
+        
+        target = "{0}/{1}_{2}".format(self._data_dir, f, i)
+        
+        logger.debug("Storing {0} at {1}".format(f, target))
+        shutil.copy(filename, target)
+        
+        data = (f, os.path.basename(target), user, timestamp())
+        self.attachments.append(data)
+        return data
+    
+    def remove_file(self, index):
+        '''
+        Remove an attached file (zero based index)
+        '''
+        _, f = self.get_file(index)
+        os.unlink(f)
+        del(self.attachments[index])
+      
+    def get_file(self, index):
+        '''
+        Get path information about an attached file (zero based index)
+        
+        returns (original, path)
+        '''
+        attachment = self.attachments[index]
+        return (attachment[0], "{0}/{1}".format(os.path.realpath(self._data_dir), attachment[1]))
+    
     def write(self, stream):
-        json.dump(self.__dict__, stream, indent=2)
+        stream.write(str(self))
+    
+    def __str__(self):
+        return json.dumps({ x: self.__dict__[x] for x in self.__dict__ if not x[0] == '_' }, self.__dict__, indent=2)
                 
     def __repr__(self):
-        return "<Issue {0}>".format(self.uuid[:6]) 
+        return "<Issue #{0}>".format(self.uuid[:8])
+    
+class PyIssuesException(Exception):
+    pass

@@ -21,7 +21,7 @@ _fields = (('description',  ''),
            ('attachments',  []),
            ('uuid',         None))
 
-_required = ('description', 'status', 'assigned', 'priority', 'version', 'milestone')
+_required = ('description', )
 
 _index = ('description', 'status', 'owner', 'assigned', 'priority', 'version', 'milestone', 'created')
 

@@ -65,7 +65,7 @@ def action_list(issues, *extra):
                 
         return True
     
-    print_issues(issues.filter(sort=options.sort, filter_method=filter_issues))
+    print_issues(issues.filter(filters=filter_issues, sort=options.sort))
     
 def action_show(issues, uuid):
     issue = issues.get(uuid)
@@ -85,7 +85,24 @@ def action_update(issues, uuid, field, *text):
     
     setattr(issue, field, " ".join(text))
     issues.update(issue)
-    
+
+def action_attach(issues, uuid, filename):
+    issue = issues.get(uuid)
+    issue.attach_file(filename, getpass.getuser())
+    issues.update(issue)
+
+def action_file(issues, uuid, index):
+    issue = issues.get(uuid)
+    orig, path = issue.get_file(int(index))
+    logger.info("Attachment: {0}\n".format(orig))
+    with open(path, 'r') as f:
+        sys.stdout.write(f.read())
+
+def action_remove(issues, uuid, index):
+    issue = issues.get(uuid)
+    issue.remove_file(int(index))
+    issues.update(issue)
+
 def action_close(issues, uuid, *extra):
     parser = argparse.ArgumentParser(description="Close issue")
     parser.add_argument('--message', '-m', help='Add comment before closing')
@@ -100,9 +117,17 @@ def action_comment(issues, uuid, *text):
     issue = issues.get(uuid)
     
     if len(text) == 0:
-        raise Exception("No comment!")
+        print "Comment - Ctrl D to exit.."
+        text = sys.stdin.read().strip()
+    else:
+        text = " ".join(text)
     
-    issue.add_comment(" ".join(text), getpass.getuser())
+    issue.add_comment(text, getpass.getuser())
+    issues.update(issue)
+    
+def action_uncomment(issues, uuid, index):
+    issue = issues.get(uuid)
+    issue.remove_comment(int(index))
     issues.update(issue)
 
 def action_edit(issues, uuid):
@@ -120,7 +145,7 @@ def action_edit(issues, uuid):
     try:
         with open(path, 'r') as bob:
             data = json.load(bob)
-        issue = pyissues.Issue(**data)
+        issue = issues.create(**data)
         
         issues.update(issue)
         logger.info("{0} updated".format(issue))
@@ -136,11 +161,21 @@ def action_delete(issues, uuid):
 def action_rebuild(issues):
     c = issues.rebuild()
     logger.info("Database rebuilt ({0} issues)".format(c))
+    
+def action_save(issues):
+    import subprocess
+    subprocess.check_call(['git', 'add', '{0}/objs'.format(issues.directory)])
+    subprocess.check_call(['git', 'add', '{0}/files'.format(issues.directory)])
+    try:
+        subprocess.check_call(['git', 'commit', issues.directory, '-m', 'Issues updated'])
+        logger.info("Saved")
+    except:
+        logger.info("Nothing to save")
 
 def print_issue(issue):
     data = issue.__dict__.copy()
-    data['attachments'] = '\n'.join(data['attachments'])
-    data['comments'] = '\n\n'.join(data['comments'])
+    data['attachments'] = '\n'.join([ "{0} [ {2} {3} ]".format(*x) for x in data['attachments'] ])
+    data['comments'] = '\n\n'.join( [ "{0}\n\t[ {1} {2} ]".format(*x) for x in data['comments'] ])
     
     print conf._template.format(**data)
 
@@ -176,5 +211,5 @@ if __name__ == '__main__':
         if options.verbose:
             raise
         print "Error: {0}".format(e)
-    
-    issues.close()
+    finally:
+        issues.close()
